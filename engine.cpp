@@ -13,11 +13,9 @@ import vulkan_hpp;
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
 
-class Engine
-{
+class Engine {
   public:
-	void run()
-	{
+	void run() {
 		initWindow();
 		initVulkan();
 		mainLoop();
@@ -27,8 +25,10 @@ class Engine
   private:
 	GLFWwindow *window = nullptr;
 
-	void initWindow()
-	{
+	vk::raii::Context  context;
+	vk::raii::Instance instance = nullptr;
+
+	void initWindow() {
 		
 		glfwInit();
 
@@ -38,35 +38,70 @@ class Engine
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
 	}
 
-	void initVulkan()
-	{
+	void initVulkan() {
+		createInstance();
 	}
 
-	void mainLoop()
-	{
-		while (!glfwWindowShouldClose(window))
-		{
+	void createInstance() {
+		constexpr vk::ApplicationInfo appInfo{
+			.pApplicationName   = "VBGE",
+			.applicationVersion = VK_MAKE_VERSION( 1, 0, 0 ),
+			.pEngineName        = "No Engine",
+			.engineVersion      = VK_MAKE_VERSION( 1, 0, 0 ),
+			.apiVersion         = vk::ApiVersion14};
+
+		// Get the required instance extensions from GLFW.
+		uint32_t glfwExtensionCount = 0;
+		auto glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+		// Check if the required GLFW extensions are supported by the Vulkan implementation.
+		auto extensionProperties = context.enumerateInstanceExtensionProperties();
+		for (uint32_t i = 0; i < glfwExtensionCount; ++i) {
+			if (std::ranges::none_of(extensionProperties,
+				[glfwExtension = glfwExtensions[i]](auto const& extensionProperty)
+				{ return strcmp(extensionProperty.extensionName, glfwExtension) == 0; })) {
+				throw std::runtime_error("Required GLFW extension not supported: " + std::string(glfwExtensions[i]));
+			}
+		}
+		// A more readable way to write the return statement would be:
+		// return std::string(extensionProperty.extensionName) == glfwExtension;
+		// although that allocates some space for the string, making it ever so slightly slower
+
+		vk::InstanceCreateInfo createInfo{
+			.pApplicationInfo = &appInfo,
+			.enabledExtensionCount = glfwExtensionCount,
+			.ppEnabledExtensionNames = glfwExtensions};
+
+		instance = vk::raii::Instance(context, createInfo);
+		
+		// Display available extensions in the terminal output.
+		auto extensions = context.enumerateInstanceExtensionProperties();
+
+		std::cout << "available extensions:\n";
+		for (const auto& extension : extensions) {
+			std::cout << '\t' << extension.extensionName << '\n';
+		}
+	}
+
+	void mainLoop() {
+		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
 		}
 	}
 
-	void cleanup()
-	{
+	void cleanup() {
 		glfwDestroyWindow(window);
 
 		glfwTerminate();
 	}
 };
 
-int main()
-{
-	try
-	{
+int main() {
+	try {
 		Engine app;
 		app.run();
 	}
-	catch (const std::exception &e)
-	{
+	catch (const std::exception &e) {
 		std::cerr << e.what() << std::endl;
 		return EXIT_FAILURE;
 	}
