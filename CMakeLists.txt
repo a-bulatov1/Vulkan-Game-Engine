@@ -7,80 +7,52 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(Vulkan 1.4.335 REQUIRED)
-#find_package(tinyobjloader REQUIRED)   # uncomment when you reach model loading
+#find_package(tinyobjloader REQUIRED)   # uncomment for model loading
 #find_package(tinygltf REQUIRED)        # uncomment for the glTF/KTX chapter
 #find_package(KTX REQUIRED)
 
-# vulkan_hpp as a plain header (no C++20 modules)
-add_library(VulkanCppModule INTERFACE)
-add_library(Vulkan::cppm ALIAS VulkanCppModule)
-target_link_libraries(VulkanCppModule INTERFACE Vulkan::Vulkan)
-target_compile_definitions(VulkanCppModule INTERFACE
-    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
-    VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
-)
-
 find_program(SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/bin REQUIRED)
 
-function(add_slang_shader_target TARGET)
-    cmake_parse_arguments("SHADER" "" "CHAPTER_NAME" "SOURCES" ${ARGN})
-    set(SHADERS_DIR ${CMAKE_BINARY_DIR}/${SHADER_CHAPTER_NAME}/shaders)
+# --- Executable ---
+add_executable(engine engine.cpp)
+set_target_properties(engine PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/engine
+    CXX_STANDARD 20)
 
-    file(GLOB HAS_COMPUTE ${CHAPTER_SHADER}.comp)
-    set(ENTRY_POINTS -entry vertMain -entry fragMain)
-    if(HAS_COMPUTE)
-        list(APPEND ENTRY_POINTS -entry compMain)
-    endif()
+target_link_libraries(engine Vulkan::Vulkan glfw glm::glm)
+target_compile_definitions(engine PRIVATE
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
+    VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+)
 
-    add_custom_command(
-        OUTPUT ${SHADERS_DIR}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADERS_DIR}
-    )
+# --- Shaders (Slang) ---
+set(SHADERS_DIR ${CMAKE_BINARY_DIR}/engine/shaders)
+file(GLOB SLANG_SHADER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.slang)
+
+if(SLANG_SHADER_SOURCES)
     add_custom_command(
         OUTPUT ${SHADERS_DIR}/slang.spv
-        COMMAND ${SLANGC_EXECUTABLE} ${SHADER_SOURCES} -target spirv -profile spirv_1_4+spvRayQueryKHR
-                -emit-spirv-directly -fvk-use-entrypoint-name ${ENTRY_POINTS} -o slang.spv
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADERS_DIR}
+        COMMAND ${SLANGC_EXECUTABLE} ${SLANG_SHADER_SOURCES} -target spirv -profile spirv_1_4+spvRayQueryKHR
+                -emit-spirv-directly -fvk-use-entrypoint-name -entry vertMain -entry fragMain
+                -o ${SHADERS_DIR}/slang.spv
         WORKING_DIRECTORY ${SHADERS_DIR}
-        DEPENDS ${SHADER_SOURCES}
-        COMMENT "Compiling Slang Shaders for ${TARGET}"
+        DEPENDS ${SLANG_SHADER_SOURCES}
+        COMMENT "Compiling Slang shaders"
         VERBATIM
     )
-    add_custom_target(${TARGET} DEPENDS ${SHADERS_DIR}/slang.spv)
-endfunction()
+    add_custom_target(engine_shaders DEPENDS ${SHADERS_DIR}/slang.spv)
+    add_dependencies(engine engine_shaders)
+endif()
 
-function(add_chapter CHAPTER_NAME)
-    cmake_parse_arguments(CHAPTER "" "SHADER" "LIBS;TEXTURES;MODELS" ${ARGN})
+# --- Assets ---
+file(GLOB MODEL_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.obj)
+if(MODEL_FILES)
+    file(COPY ${MODEL_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/models)
+endif()
 
-    add_executable(${CHAPTER_NAME} ${CHAPTER_NAME}.cpp)
-    set_target_properties(${CHAPTER_NAME} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CHAPTER_NAME}
-        CXX_STANDARD 20)
-    target_link_libraries(${CHAPTER_NAME} Vulkan::cppm glfw)
-    target_compile_definitions(${CHAPTER_NAME} PRIVATE VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS)
-
-    if(DEFINED CHAPTER_SHADER)
-        file(GLOB SHADER_SLANG_SOURCES ${CHAPTER_SHADER}.slang)
-        if(SHADER_SLANG_SOURCES)
-            set(SHADER_TARGET ${CHAPTER_NAME}_slang_shader)
-            add_slang_shader_target(${SHADER_TARGET} CHAPTER_NAME ${CHAPTER_NAME} SOURCES ${SHADER_SLANG_SOURCES})
-            add_dependencies(${CHAPTER_NAME} ${SHADER_TARGET})
-        endif()
-    endif()
-
-    if(DEFINED CHAPTER_LIBS)
-        target_link_libraries(${CHAPTER_NAME} ${CHAPTER_LIBS})
-    endif()
-
-    if(DEFINED CHAPTER_MODELS)
-        list(TRANSFORM CHAPTER_MODELS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/assets/")
-        file(COPY ${CHAPTER_MODELS} DESTINATION ${CMAKE_BINARY_DIR}/${CHAPTER_NAME}/models)
-    endif()
-
-    if(DEFINED CHAPTER_TEXTURES)
-        list(TRANSFORM CHAPTER_TEXTURES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/assets/")
-        file(COPY ${CHAPTER_TEXTURES} DESTINATION ${CMAKE_BINARY_DIR}/${CHAPTER_NAME}/textures)
-    endif()
-endfunction()
-
-add_chapter(engine
-    LIBS glm::glm)
+file(GLOB TEXTURE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.png)
+if(TEXTURE_FILES)
+    file(COPY ${TEXTURE_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/textures)
+endif()
