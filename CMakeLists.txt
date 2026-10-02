@@ -1,6 +1,10 @@
+# rm -rf build/
+# cmake -S . -B build -G Ninja
+# cmake --build build --target run
+
 cmake_minimum_required(VERSION 3.29)
 
-project(VulkanTutorial)
+project(VBGE)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -56,3 +60,10 @@ file(GLOB TEXTURE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.png)
 if(TEXTURE_FILES)
     file(COPY ${TEXTURE_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/textures)
 endif()
+
+add_custom_target(run
+    COMMAND engine
+    DEPENDS engine
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/engine
+    USES_TERMINAL
+)
