@@ -10,6 +10,9 @@ import vulkan_hpp;
 #include <iostream>
 #include <stdexcept>
 
+#include <limits> // Necessary for std::numeric_limits
+#include <algorithm> // Necessary for std::clamp
+
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
 
@@ -42,7 +45,14 @@ class Engine {
 	vk::raii::Device logicalDevice = nullptr;
 	vk::raii::Queue graphicsQueue = nullptr;
 
-	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName};
+	vk::raii::SwapchainKHR swapChain = nullptr;
+	std::vector<vk::Image> swapChainImages;
+	vk::SurfaceFormatKHR swapChainSurfaceFormat;
+	vk::Extent2D swapChainExtent;
+	//std::vector<vk::raii::ImageView> swapChainImageViews;
+
+	std::vector<const char*> requiredDeviceExtension = {
+		vk::KHRSwapchainExtensionName};
 
 	void initWindow() {
 		
@@ -65,6 +75,7 @@ class Engine {
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
+		createSwapChain();
 	}
 
 	void createInstance() {
@@ -221,6 +232,7 @@ class Engine {
 
 		vk::DeviceQueueCreateInfo deviceQueueCreateInfo{.queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority};
 		
+		// ~ is the bitwise NOT, making all the 0 bits into 1s, turning a 0 into the uint32_t max value. Same as UINT32_MAX
 		uint32_t queueIndex = ~0;
 		for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++) {
 		if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
@@ -244,8 +256,6 @@ class Engine {
 			{.extendedDynamicState = true}         // Enable extended dynamic state from the extension
 		};
 		
-		std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName};
-
 		vk::DeviceCreateInfo deviceCreateInfo{
 			// Since it's a chain, calling the first one will imply the rest.
     		.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(), 
@@ -257,6 +267,73 @@ class Engine {
 
 		logicalDevice = vk::raii::Device(physicalDevice, deviceCreateInfo);
 		graphicsQueue = vk::raii::Queue(logicalDevice, graphicsIndex, 0);
+	}
+
+	vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats) {
+		const auto formatIt = std::ranges::find_if(availableFormats,
+			[](const auto &format) {return format.format == vk::Format::eB8G8R8A8Srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;});
+		return formatIt != availableFormats.end() ? *formatIt : availableFormats[0];
+	}
+
+	vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes) {
+		// Vsync or Triple Buffering, both avoid screen tearing but TB uses more energy because it render frames as fast as possible.
+		assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) {return presentMode == vk::PresentModeKHR::eFifo;}));
+		return std::ranges::any_of(availablePresentModes, [](const vk::PresentModeKHR value) {return vk::PresentModeKHR::eMailbox == value;}) ?
+			vk::PresentModeKHR::eMailbox : // Triple Buffering
+			vk::PresentModeKHR::eFifo; // Vsync (not exactly)
+	}
+
+	vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities) {
+		// currentExtent is only set to the special "undefined" value described above
+		// when the window manager lets us choose the extent ourselves; any other value
+		// means the surface already dictates a fixed extent that we must use as-is.
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+			return capabilities.currentExtent;
+		}
+		int width, height;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		return {
+			std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+			std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+		};
+	}
+
+	uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities) {
+		auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount);
+		if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount)) {
+			minImageCount = surfaceCapabilities.maxImageCount;
+		}
+		return minImageCount;
+	}
+
+	void createSwapChain() {
+		vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(*surface);
+		swapChainExtent = chooseSwapExtent(surfaceCapabilities);
+		uint32_t minImageCount = chooseSwapMinImageCount(surfaceCapabilities);
+
+		std::vector<vk::SurfaceFormatKHR> availableFormats = physicalDevice.getSurfaceFormatsKHR(*surface);
+		swapChainSurfaceFormat = chooseSwapSurfaceFormat(availableFormats);
+
+		std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface);
+		vk::PresentModeKHR presentMode = chooseSwapPresentMode(availablePresentModes);
+
+		vk::SwapchainCreateInfoKHR swapChainCreateInfo{
+			.surface          = *surface,
+		    .minImageCount    = minImageCount,
+		    .imageFormat      = swapChainSurfaceFormat.format,
+		    .imageColorSpace  = swapChainSurfaceFormat.colorSpace,
+		    .imageExtent      = swapChainExtent,
+		    .imageArrayLayers = 1,
+		    .imageUsage       = vk::ImageUsageFlagBits::eColorAttachment, // could be eTransferDst if youre doing post-processing, for example.
+		    .imageSharingMode = vk::SharingMode::eExclusive, 
+		    .preTransform     = surfaceCapabilities.currentTransform,
+		    .compositeAlpha   = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+		    .presentMode      = presentMode,
+		    .clipped          = true
+		};
+		swapChain = vk::raii::SwapchainKHR(logicalDevice, swapChainCreateInfo);
+		swapChainImages = swapChain.getImages();
 	}
 
 	void mainLoop() {
