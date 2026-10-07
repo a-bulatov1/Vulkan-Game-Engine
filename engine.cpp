@@ -38,6 +38,8 @@ class Engine {
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
 	vk::raii::PhysicalDevice physicalDevice = nullptr;
+	vk::raii::Device logicalDevice = nullptr;
+	vk::raii::Queue graphicsQueue = nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName};
 
@@ -60,6 +62,7 @@ class Engine {
 		createInstance();
 		setupDebugMessenger();
 		pickPhysicalDevice();
+		createLogicalDevice();
 	}
 
 	void createInstance() {
@@ -174,6 +177,20 @@ class Engine {
 		return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
 	}
 
+	static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
+		vk::DebugUtilsMessageSeverityFlagBitsEXT severity, vk::DebugUtilsMessageTypeFlagsEXT type,
+        const vk::DebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData) {
+			
+		std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
+
+		if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
+			severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError) {
+			std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
+		}
+
+		return vk::False;
+	}
+
 	void pickPhysicalDevice() {
 		std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
 		auto const devIter = std::ranges::find_if(physicalDevices, [&](auto const &physicalDevice) { 
@@ -185,17 +202,38 @@ class Engine {
   		physicalDevice = *devIter;
 	}
 
-	static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
-		vk::DebugUtilsMessageSeverityFlagBitsEXT severity, vk::DebugUtilsMessageTypeFlagsEXT type,
-        const vk::DebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData) {
-		std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
+	void createLogicalDevice() {
+		std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
+		auto graphicsQueueFamilyProperty = std::ranges::find_if(queueFamilyProperties, [](auto const &qfp) 
+			{return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);});
+		auto graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
+		float queuePriority = 0.5f; // Needed even for one queue
 
-		if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
-			severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError) {
-			std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
-		}
+		vk::DeviceQueueCreateInfo deviceQueueCreateInfo{.queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority};
 
-		return vk::False;
+		// Create a chain of feature structures
+		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+			vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+		featureChain = {
+			{},                                    // vk::PhysicalDeviceFeatures2 (empty for now)
+			{.shaderDrawParameters = true},        // Enable shader draw parameters from Vulkan 1.1
+			{.dynamicRendering = true},            // Enable dynamic rendering from Vulkan 1.3
+			{.extendedDynamicState = true}         // Enable extended dynamic state from the extension
+		};
+		
+		std::vector<const char*> requiredDeviceExtension = {vk::KHRSwapchainExtensionName};
+
+		vk::DeviceCreateInfo deviceCreateInfo{
+			// Since it's a chain, calling the first one will imply the rest.
+    		.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(), 
+    		.queueCreateInfoCount = 1,
+    		.pQueueCreateInfos = &deviceQueueCreateInfo,
+    		.enabledExtensionCount = static_cast<uint32_t>(requiredDeviceExtension.size()),
+    		.ppEnabledExtensionNames = requiredDeviceExtension.data()
+		};
+
+		logicalDevice = vk::raii::Device(physicalDevice, deviceCreateInfo);
+		graphicsQueue = vk::raii::Queue(logicalDevice, graphicsIndex, 0);
 	}
 
 	void mainLoop() {
