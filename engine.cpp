@@ -37,6 +37,7 @@ class Engine {
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
 	vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+	vk::raii::SurfaceKHR surface = nullptr;
 	vk::raii::PhysicalDevice physicalDevice = nullptr;
 	vk::raii::Device logicalDevice = nullptr;
 	vk::raii::Queue graphicsQueue = nullptr;
@@ -61,6 +62,7 @@ class Engine {
 	void initVulkan() {
 		createInstance();
 		setupDebugMessenger();
+		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
 	}
@@ -149,6 +151,39 @@ class Engine {
     	debugMessenger = instance.createDebugUtilsMessengerEXT( debugUtilsMessengerCreateInfoEXT );
 	}
 
+	static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
+		vk::DebugUtilsMessageSeverityFlagBitsEXT severity, vk::DebugUtilsMessageTypeFlagsEXT type,
+        const vk::DebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData) {
+			
+		std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
+
+		if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
+			severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError) {
+			std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
+		}
+
+		return vk::False;
+	}
+
+	void createSurface() {
+    	VkSurfaceKHR _surface;
+    	if (glfwCreateWindowSurface(*instance, window, nullptr, &_surface) != 0) {
+    	    throw std::runtime_error("failed to create window surface!");
+    	}
+    	surface = vk::raii::SurfaceKHR(instance, _surface);
+	}
+
+	void pickPhysicalDevice() {
+		std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
+		auto const devIter = std::ranges::find_if(physicalDevices, [&](auto const &physicalDevice) { 
+			return isDeviceSuitable(physicalDevice); 
+		});
+		if (devIter == physicalDevices.end()) {
+			throw std::runtime_error("failed to find a suitable GPU!");
+		}
+  		physicalDevice = *devIter;
+	}
+
 	bool isDeviceSuitable(vk::raii::PhysicalDevice const &physicalDevice) {
 		// Check if the physicalDevice supports the Vulkan 1.3 API version
 		bool supportsVulkan1_3 = physicalDevice.getProperties().apiVersion >= vk::ApiVersion13;
@@ -177,31 +212,6 @@ class Engine {
 		return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
 	}
 
-	static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
-		vk::DebugUtilsMessageSeverityFlagBitsEXT severity, vk::DebugUtilsMessageTypeFlagsEXT type,
-        const vk::DebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData) {
-			
-		std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
-
-		if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
-			severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError) {
-			std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
-		}
-
-		return vk::False;
-	}
-
-	void pickPhysicalDevice() {
-		std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
-		auto const devIter = std::ranges::find_if(physicalDevices, [&](auto const &physicalDevice) { 
-			return isDeviceSuitable(physicalDevice); 
-		});
-		if (devIter == physicalDevices.end()) {
-			throw std::runtime_error("failed to find a suitable GPU!");
-		}
-  		physicalDevice = *devIter;
-	}
-
 	void createLogicalDevice() {
 		std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
 		auto graphicsQueueFamilyProperty = std::ranges::find_if(queueFamilyProperties, [](auto const &qfp) 
@@ -210,6 +220,19 @@ class Engine {
 		float queuePriority = 0.5f; // Needed even for one queue
 
 		vk::DeviceQueueCreateInfo deviceQueueCreateInfo{.queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority};
+		
+		uint32_t queueIndex = ~0;
+		for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++) {
+		if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
+			physicalDevice.getSurfaceSupportKHR(qfpIndex, *surface)) {
+			// found a queue family that supports both graphics and present
+			queueIndex = qfpIndex;
+			break;
+		}
+		}
+		if (queueIndex == ~0) {
+			throw std::runtime_error("Could not find a queue for graphics and present -> terminating");
+		}
 
 		// Create a chain of feature structures
 		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
