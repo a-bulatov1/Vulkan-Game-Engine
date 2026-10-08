@@ -77,6 +77,7 @@ class Engine {
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
+		createGraphicsPipeline();
 	}
 
 	void createInstance() {
@@ -349,6 +350,10 @@ class Engine {
 			imageViewCreateInfo.image = image;
 			swapChainImageViews.emplace_back(logicalDevice, imageViewCreateInfo);
 		}
+	}
+
+	void createGraphicsPipeline() {
+		
 	}
 
 	void mainLoop() {
