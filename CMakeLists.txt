@@ -32,7 +32,7 @@ target_compile_definitions(engine PRIVATE
 
 # --- Shaders (Slang) ---
 set(SHADERS_DIR ${CMAKE_BINARY_DIR}/engine/shaders)
-file(GLOB SLANG_SHADER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.slang)
+file(GLOB SLANG_SHADER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.slang)
 
 if(SLANG_SHADER_SOURCES)
     add_custom_command(
@@ -60,6 +60,8 @@ file(GLOB TEXTURE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.png)
 if(TEXTURE_FILES)
     file(COPY ${TEXTURE_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/textures)
 endif()
+
+message(STATUS "Slang sources: ${SLANG_SHADER_SOURCES}")
 
 add_custom_target(run
     COMMAND engine
