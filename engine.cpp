@@ -54,6 +54,7 @@ class Engine {
 	std::vector<vk::raii::ImageView> swapChainImageViews;
 
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
+	vk::raii::Pipeline graphicsPipeline = nullptr;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName};
@@ -413,6 +414,28 @@ class Engine {
 		};
 
 		pipelineLayout = vk::raii::PipelineLayout(logicalDevice, pipelineLayoutInfo);
+
+		vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo{ 
+			.colorAttachmentCount = 1, 
+			.pColorAttachmentFormats = &swapChainSurfaceFormat.format
+		};
+
+		vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
+			{.stageCount          = 2,
+			.pStages              = shaderStages,
+			.pVertexInputState    = &vertexInputInfo,
+			.pInputAssemblyState  = &inputAssembly,
+			.pViewportState       = &viewportState,
+			.pRasterizationState  = &rasterizer,
+			.pMultisampleState    = &multisampling,
+			.pColorBlendState     = &colorBlending,
+			.pDynamicState        = &dynamicState,
+			.layout               = pipelineLayout,
+			.renderPass           = nullptr},
+			{.colorAttachmentCount = 1, .pColorAttachmentFormats = &swapChainSurfaceFormat.format}
+		};
+
+		graphicsPipeline = vk::raii::Pipeline(logicalDevice, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
 	}
 
 	static std::vector<char> readFile(const std::string &filename) {
