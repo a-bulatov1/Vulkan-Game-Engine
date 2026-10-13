@@ -60,6 +60,10 @@ class Engine {
 	vk::raii::CommandPool commandPool = nullptr;
 	vk::raii::CommandBuffer commandBuffer = nullptr;
 
+	vk::raii::Semaphore presentCompleteSemaphore = nullptr;
+	vk::raii::Semaphore renderFinishedSemaphore = nullptr;
+	vk::raii::Fence drawFence = nullptr;
+
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName};
 
@@ -89,6 +93,7 @@ class Engine {
 		createGraphicsPipeline();
 		createCommandPool();
 		createCommandBuffer();
+		createSyncObjects();
 	}
 
 	void createInstance() {
@@ -263,7 +268,7 @@ class Engine {
 		featureChain = {
 			{},                                    // vk::PhysicalDeviceFeatures2 (empty for now)
 			{.shaderDrawParameters = true},        // Enable shader draw parameters from Vulkan 1.1
-			{.dynamicRendering = true},            // Enable dynamic rendering from Vulkan 1.3
+			{.synchronization2 = true, .dynamicRendering = true},            // Enable dynamic rendering from Vulkan 1.3
 			{.extendedDynamicState = true}         // Enable extended dynamic state from the extension
 		};
 		
@@ -461,8 +466,7 @@ class Engine {
 		commandBuffer = std::move(vk::raii::CommandBuffers(logicalDevice, allocInfo).front());
 	}
 
-	void recordCommandBuffer(uint32_t imageIndex)
-	{
+	void recordCommandBuffer(uint32_t imageIndex) {
 		commandBuffer.begin({});
 
 		// Before starting rendering, transition the swapchain image to vk::ImageLayout::eColorAttachmentOptimal
@@ -540,6 +544,47 @@ class Engine {
 		commandBuffer.pipelineBarrier2(dependency_info);
 	}
 
+	void createSyncObjects() {
+		presentCompleteSemaphore = vk::raii::Semaphore(logicalDevice, vk::SemaphoreCreateInfo());
+		renderFinishedSemaphore = vk::raii::Semaphore(logicalDevice, vk::SemaphoreCreateInfo());
+		drawFence = vk::raii::Fence(logicalDevice, {.flags = vk::FenceCreateFlagBits::eSignaled});
+	}
+
+	void drawFrame() {
+    	auto fenceResult = logicalDevice.waitForFences(*drawFence, vk::True, UINT64_MAX);
+		if (fenceResult != vk::Result::eSuccess) {
+			throw std::runtime_error("failed to wait for fence!");
+		}
+		logicalDevice.resetFences(*drawFence);
+
+		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphore, nullptr);
+
+		recordCommandBuffer(imageIndex);
+
+		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+		const vk::SubmitInfo   submitInfo{
+			.waitSemaphoreCount   = 1,
+            .pWaitSemaphores      = &*presentCompleteSemaphore,
+            .pWaitDstStageMask    = &waitDestinationStageMask,
+            .commandBufferCount   = 1,
+            .pCommandBuffers      = &*commandBuffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores    = &*renderFinishedSemaphore
+		};
+
+		graphicsQueue.submit(submitInfo, *drawFence);
+
+		const vk::PresentInfoKHR presentInfoKHR{
+			.waitSemaphoreCount = 1,
+			.pWaitSemaphores    = &*renderFinishedSemaphore,
+			.swapchainCount     = 1,
+			.pSwapchains        = &*swapChain,
+			.pImageIndices      = &imageIndex
+		};
+
+		result = graphicsQueue.presentKHR(presentInfoKHR);
+	}
+
 	static std::vector<char> readFile(const std::string &filename) {
 		std::ifstream file(filename, std::ios::ate | std::ios::binary);
 		if (!file.is_open()) {
@@ -564,7 +609,10 @@ class Engine {
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
+			drawFrame();
 		}
+
+		logicalDevice.waitIdle();
 	}
 
 	void cleanup() {
