@@ -66,23 +66,30 @@ class Engine {
 	std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
 	std::vector<vk::raii::Fence> inFlightFences;
 	uint32_t frameIndex = 0;
+	bool framebufferResized = false;
 
 	std::vector<const char*> requiredDeviceExtension = {
 		vk::KHRSwapchainExtensionName};
 
 	void initWindow() {
-		
 		glfwInit();
 
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+		glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
 		glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int, int action, int) {
 			if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
 				glfwSetWindowShouldClose(w, GLFW_TRUE);
     	});
+	}
+
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+		auto app = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));
+		app->framebufferResized = true;
 	}
 
 	void initVulkan() {
@@ -567,9 +574,19 @@ class Engine {
 		if (fenceResult != vk::Result::eSuccess) {
 			throw std::runtime_error("failed to wait for fence!");
 		}
-		logicalDevice.resetFences(*inFlightFences[frameIndex]);
 
 		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
+
+		if (result == vk::Result::eErrorOutOfDateKHR) {
+			recreateSwapChain();
+			return;
+		}
+		if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
+			assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		logicalDevice.resetFences(*inFlightFences[frameIndex]);
 
 		commandBuffers[frameIndex].reset();
 		recordCommandBuffer(imageIndex);
@@ -596,6 +613,13 @@ class Engine {
 		};
 
 		result = graphicsQueue.presentKHR(presentInfoKHR);
+		if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR) || framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
+		} else {
+			// There are no other success codes than eSuccess; on any error code, presentKHR already threw an exception.
+			assert(result == vk::Result::eSuccess);
+		}
     	frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
@@ -620,6 +644,29 @@ class Engine {
 		return shaderModule;
 	}
 
+	void cleanupSwapChain() {
+    	swapChainImageViews.clear();
+    	swapChain = nullptr;
+	}
+
+	void recreateSwapChain() {
+	    int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		while ((width == 0 || height == 0) && !glfwWindowShouldClose(window)) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+		if (glfwWindowShouldClose(window)) {
+			return;
+		}
+		logicalDevice.waitIdle();
+
+		cleanupSwapChain();
+
+		createSwapChain();
+		createImageViews();
+	}
+
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
@@ -630,8 +677,8 @@ class Engine {
 	}
 
 	void cleanup() {
+		cleanupSwapChain();
 		glfwDestroyWindow(window);
-
 		glfwTerminate();
 	}
 };
