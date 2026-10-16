@@ -4,16 +4,16 @@
 #else
 import vulkan_hpp;
 #endif
-#include <GLFW/glfw3.h>
 
+#include <GLFW/glfw3.h>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
-
 #include <limits> // Necessary for std::numeric_limits
 #include <algorithm> // Necessary for std::clamp
-
 #include <fstream> // File loading
+#include <glm/glm.hpp> // Linear algebra
+#include <array>
 
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
@@ -29,6 +29,29 @@ constexpr bool enableValidationLayers = true;
 #endif
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
+struct Vertex {
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	static vk::VertexInputBindingDescription getBindingDescription() {
+		return {.binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex};
+	}
+
+	static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+	{
+		return {{
+			{.location = 0, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, pos)},
+			{.location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color)}
+		}};
+	}
+};
+
+const std::vector<Vertex> vertices = {
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 class Engine {
   public:
@@ -390,7 +413,16 @@ class Engine {
 			.pName  = "fragMain" 
 		};
 		vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
-		vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
+		vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+			.vertexBindingDescriptionCount   = 1,
+            .pVertexBindingDescriptions      = &bindingDescription,
+            .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
+            .pVertexAttributeDescriptions    = attributeDescriptions.data()
+		};
+		
 		vk::PipelineInputAssemblyStateCreateInfo inputAssembly{.topology = vk::PrimitiveTopology::eTriangleList};
 		vk::PipelineViewportStateCreateInfo viewportState{.viewportCount = 1, .scissorCount = 1};
 
