@@ -4,16 +4,16 @@
 #else
 import vulkan_hpp;
 #endif
-#include <GLFW/glfw3.h>
 
+#include <GLFW/glfw3.h>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
-
 #include <limits> // Necessary for std::numeric_limits
 #include <algorithm> // Necessary for std::clamp
-
 #include <fstream> // File loading
+#include <glm/glm.hpp> // Linear algebra
+#include <array>
 
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
@@ -29,6 +29,35 @@ constexpr bool enableValidationLayers = true;
 #endif
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
+struct Vertex {
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	static vk::VertexInputBindingDescription getBindingDescription() {
+		return {.binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex};
+	}
+
+	static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+	{
+		return {{
+			{.location = 0, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, pos)},
+			{.location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color)}
+		}};
+	}
+};
+
+// Hardcoded vertices and indices for pre-model testing
+const std::vector<Vertex> vertices = {
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+const std::vector<uint16_t> indices = {
+    0, 1, 2, 2, 3, 0
+};
 
 class Engine {
   public:
@@ -60,6 +89,10 @@ class Engine {
 	vk::raii::Pipeline graphicsPipeline = nullptr;
 
 	vk::raii::CommandPool commandPool = nullptr;
+	vk::raii::Buffer vertexBuffer = nullptr;
+	vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+	vk::raii::Buffer indexBuffer = nullptr;
+	vk::raii::DeviceMemory indexBufferMemory  = nullptr;
 	std::vector<vk::raii::CommandBuffer> commandBuffers;
 
 	std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
@@ -102,6 +135,8 @@ class Engine {
 		createImageViews();
 		createGraphicsPipeline();
 		createCommandPool();
+		createVertexBuffer();
+		createIndexBuffer();
 		createCommandBuffers();
 		createSyncObjects();
 	}
@@ -390,7 +425,16 @@ class Engine {
 			.pName  = "fragMain" 
 		};
 		vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
-		vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
+		vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+			.vertexBindingDescriptionCount   = 1,
+            .pVertexBindingDescriptions      = &bindingDescription,
+            .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
+            .pVertexAttributeDescriptions    = attributeDescriptions.data()
+		};
+		
 		vk::PipelineInputAssemblyStateCreateInfo inputAssembly{.topology = vk::PrimitiveTopology::eTriangleList};
 		vk::PipelineViewportStateCreateInfo viewportState{.viewportCount = 1, .scissorCount = 1};
 
@@ -466,6 +510,79 @@ class Engine {
 		commandPool = vk::raii::CommandPool(logicalDevice, poolInfo);
 	}
 
+	std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties) {
+  		vk::BufferCreateInfo bufferInfo{
+			.size 		 = size, 
+			.usage 		 = usage, 
+			.sharingMode = vk::SharingMode::eExclusive
+		};
+  		vk::raii::Buffer buffer = vk::raii::Buffer(logicalDevice, bufferInfo);
+  		vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
+  		vk::MemoryAllocateInfo allocInfo{
+			.allocationSize  = memRequirements.size, 
+			.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties)
+		};
+  		vk::raii::DeviceMemory bufferMemory = vk::raii::DeviceMemory(logicalDevice, allocInfo);
+  		buffer.bindMemory(*bufferMemory, 0);
+  		return {std::move(buffer), std::move(bufferMemory)};
+	}
+
+	void copyBuffer(vk::raii::Buffer &srcBuffer, vk::raii::Buffer &dstBuffer, vk::DeviceSize size) {
+		vk::CommandBufferAllocateInfo allocInfo{
+			.commandPool = commandPool, 
+			.level = vk::CommandBufferLevel::ePrimary, 
+			.commandBufferCount = 1
+		};
+		vk::raii::CommandBuffer commandCopyBuffer = std::move(logicalDevice.allocateCommandBuffers(allocInfo).front());
+		commandCopyBuffer.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+		commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy(0, 0, size));
+		commandCopyBuffer.end();
+		graphicsQueue.submit(vk::SubmitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commandCopyBuffer}, nullptr);
+		graphicsQueue.waitIdle();
+	}
+
+	void createVertexBuffer() {
+		vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+		auto [stagingBuffer, stagingBufferMemory] =
+			createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+		void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+		memcpy(dataStaging, vertices.data(), bufferSize);
+		stagingBufferMemory.unmapMemory();
+
+		std::tie(vertexBuffer, vertexBufferMemory) =
+			createBuffer(bufferSize, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+		copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+	}
+
+	void createIndexBuffer() {
+		vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+		auto [stagingBuffer, stagingBufferMemory] =
+		    createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+		void *data = stagingBufferMemory.mapMemory(0, bufferSize);
+		memcpy(data, indices.data(), (size_t) bufferSize);
+		stagingBufferMemory.unmapMemory();
+
+		std::tie(indexBuffer, indexBufferMemory) =
+		    createBuffer(bufferSize, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+		copyBuffer(stagingBuffer, indexBuffer, bufferSize);
+	}
+
+	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
+		vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+    		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+				return i;
+			}
+		}
+		throw std::runtime_error("failed to find suitable memory type!");
+	}	
+
 	void createCommandBuffers() {
 		vk::CommandBufferAllocateInfo allocInfo{
 			.commandPool = commandPool, 
@@ -506,7 +623,9 @@ class Engine {
 		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
 		commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
 		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-		commandBuffer.draw(3, 1, 0, 0);
+		commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
+		commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexTypeValue<decltype(indices)::value_type>::value);
+		commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 		commandBuffer.endRendering();
 
 		// After rendering, transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
