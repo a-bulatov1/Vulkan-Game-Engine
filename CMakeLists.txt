@@ -1,6 +1,6 @@
 # rm -rf build/
-# cmake -S . -B build -G Ninja
-# cmake --build build --target run
+# cmake --preset debug
+# cmake --build --preset debug --target run
 
 cmake_minimum_required(VERSION 3.29)
 
@@ -28,6 +28,8 @@ target_compile_definitions(engine PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
     VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
     VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 )
 
 # --- Shaders (Slang) ---
