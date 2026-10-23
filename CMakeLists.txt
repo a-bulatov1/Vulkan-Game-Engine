@@ -23,13 +23,13 @@ set_target_properties(engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/engine
     CXX_STANDARD 20)
 
+target_include_directories(engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libraries)
+
 target_link_libraries(engine Vulkan::Vulkan glfw glm::glm)
 target_compile_definitions(engine PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
     VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
     VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
-    GLM_FORCE_DEPTH_ZERO_TO_ONE
-    GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 )
 
 # --- Shaders (Slang) ---
@@ -58,7 +58,9 @@ if(MODEL_FILES)
     file(COPY ${MODEL_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/models)
 endif()
 
-file(GLOB TEXTURE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.png)
+file(GLOB TEXTURE_FILES 
+    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.png
+    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.jpg)
 if(TEXTURE_FILES)
     file(COPY ${TEXTURE_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/textures)
 endif()
