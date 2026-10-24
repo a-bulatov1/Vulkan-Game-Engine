@@ -1,6 +1,6 @@
 # rm -rf build/
-# cmake -S . -B build -G Ninja
-# cmake --build build --target run
+# cmake --preset debug
+# cmake --build --preset debug --target run
 
 cmake_minimum_required(VERSION 3.29)
 
@@ -22,6 +22,8 @@ add_executable(engine engine.cpp)
 set_target_properties(engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/engine
     CXX_STANDARD 20)
+
+target_include_directories(engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libraries)
 
 target_link_libraries(engine Vulkan::Vulkan glfw glm::glm)
 target_compile_definitions(engine PRIVATE
@@ -56,7 +58,9 @@ if(MODEL_FILES)
     file(COPY ${MODEL_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/models)
 endif()
 
-file(GLOB TEXTURE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.png)
+file(GLOB TEXTURE_FILES 
+    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.png
+    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.jpg)
 if(TEXTURE_FILES)
     file(COPY ${TEXTURE_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/textures)
 endif()
