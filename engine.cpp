@@ -39,16 +39,17 @@ constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 struct Vertex {
 	glm::vec2 pos;
 	glm::vec3 color;
+	glm::vec2 texCoord;
 
 	static vk::VertexInputBindingDescription getBindingDescription() {
 		return {.binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex};
 	}
 
-	static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
-	{
+	static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions() {
 		return {{
 			{.location = 0, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, pos)},
-			{.location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color)}
+			{.location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color)},
+			{.location = 2, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, texCoord)}
 		}};
 	}
 };
@@ -61,10 +62,10 @@ struct UniformBufferObject {
 
 // Hardcoded vertices and indices for pre-model testing
 const std::vector<Vertex> vertices = {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
 };
 
 const std::vector<uint16_t> indices = {
@@ -335,12 +336,12 @@ class Engine {
 		vk::DeviceQueueCreateInfo deviceQueueCreateInfo{.queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority};
 		
 		for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++) {
-		if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
-			physicalDevice.getSurfaceSupportKHR(qfpIndex, *surface)) {
-			// found a queue family that supports both graphics and present
-			queueIndex = qfpIndex;
-			break;
-		}
+			if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
+				physicalDevice.getSurfaceSupportKHR(qfpIndex, *surface)) {
+				// found a queue family that supports both graphics and present
+				queueIndex = qfpIndex;
+				break;
+			}
 		}
 		if (queueIndex == ~0) {
 			throw std::runtime_error("Could not find a queue for graphics and present -> terminating");
@@ -455,13 +456,18 @@ class Engine {
 	}
 
 	void createDescriptorSetLayout() {
-		vk::DescriptorSetLayoutBinding uboLayoutBinding{
-		    .binding = 0, 
-			.descriptorType = vk::DescriptorType::eUniformBuffer, 
-			.descriptorCount = 1, 
-			.stageFlags = vk::ShaderStageFlagBits::eVertex
-		};
-		vk::DescriptorSetLayoutCreateInfo layoutInfo{.bindingCount = 1, .pBindings = &uboLayoutBinding};
+		std::array<vk::DescriptorSetLayoutBinding, 2> bindings{{
+			{.binding = 0, 
+			 .descriptorType = vk::DescriptorType::eUniformBuffer, 
+			 .descriptorCount = 1, 
+			 .stageFlags = vk::ShaderStageFlagBits::eVertex},
+		    {.binding = 1, 
+			 .descriptorType = vk::DescriptorType::eCombinedImageSampler, 
+			 .descriptorCount = 1, 
+			 .stageFlags = vk::ShaderStageFlagBits::eFragment}
+			}};
+
+		vk::DescriptorSetLayoutCreateInfo layoutInfo{.bindingCount = static_cast<uint32_t>(bindings.size()), .pBindings = bindings.data()};
 		descriptorSetLayout = vk::raii::DescriptorSetLayout(logicalDevice, layoutInfo);
 	}
 
@@ -643,7 +649,6 @@ class Engine {
 		textureSampler = vk::raii::Sampler(logicalDevice, samplerInfo);
 	}
 
-
 	void copyBufferToImage(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Buffer &buffer, vk::raii::Image &image, uint32_t width, uint32_t height) {
 		vk::BufferImageCopy region{
 			.bufferOffset      = 0,
@@ -791,12 +796,14 @@ class Engine {
 	}
 
 	void createDescriptorPool() {
-		vk::DescriptorPoolSize poolSize{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = MAX_FRAMES_IN_FLIGHT};
+		std::array<vk::DescriptorPoolSize, 2> poolSize{{
+			{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = MAX_FRAMES_IN_FLIGHT},
+		    {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = MAX_FRAMES_IN_FLIGHT}}};
 		vk::DescriptorPoolCreateInfo poolInfo{
-			.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 
-			.maxSets = MAX_FRAMES_IN_FLIGHT, 
-			.poolSizeCount = 1, 
-			.pPoolSizes = &poolSize
+			.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+		    .maxSets = MAX_FRAMES_IN_FLIGHT,
+		    .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
+		    .pPoolSizes = poolSize.data()
 		};
 		descriptorPool = vk::raii::DescriptorPool(logicalDevice, poolInfo);
 	}
@@ -816,15 +823,26 @@ class Engine {
 				.offset = 0, 
 				.range = sizeof(UniformBufferObject)
 			};
-			vk::WriteDescriptorSet   descriptorWrite{
-				.dstSet = descriptorSets[i],
-			    .dstBinding = 0,
-			    .dstArrayElement = 0,
-			    .descriptorCount = 1,
-			    .descriptorType = vk::DescriptorType::eUniformBuffer,
-			    .pBufferInfo = &bufferInfo
+			vk::DescriptorImageInfo imageInfo{
+				.sampler = textureSampler, 
+				.imageView = textureImageView, 
+				.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
 			};
-			logicalDevice.updateDescriptorSets(descriptorWrite, {});
+
+			std::array<vk::WriteDescriptorSet, 2> descriptorWrites{{
+				{.dstSet          = descriptorSets[i],
+			     .dstBinding      = 0,
+			     .dstArrayElement = 0,
+			     .descriptorCount = 1,
+			     .descriptorType  = vk::DescriptorType::eUniformBuffer,
+			     .pBufferInfo     = &bufferInfo},
+			    {.dstSet          = descriptorSets[i],
+			     .dstBinding      = 1,
+			     .dstArrayElement = 0,
+			     .descriptorCount = 1,
+			     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+			     .pImageInfo      = &imageInfo}}};
+			logicalDevice.updateDescriptorSets(descriptorWrites, {});
 		}
 	}
 
