@@ -11,7 +11,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(Vulkan 1.4.335 REQUIRED)
-#find_package(tinyobjloader REQUIRED)   # uncomment for model loading
 #find_package(tinygltf REQUIRED)        # uncomment for the glTF/KTX chapter
 #find_package(KTX REQUIRED)
 
@@ -23,7 +22,7 @@ set_target_properties(engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/engine
     CXX_STANDARD 20)
 
-target_include_directories(engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libraries)
+target_include_directories(engine SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libraries)
 
 target_link_libraries(engine Vulkan::Vulkan glfw glm::glm)
 target_compile_definitions(engine PRIVATE

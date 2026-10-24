@@ -20,6 +20,8 @@ import vulkan_hpp;
 #include <array>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
 
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
@@ -80,7 +82,7 @@ const std::vector<uint16_t> indices = {
 /*
 to refactor:
 	transitionImageLayout() and transition_image_layout() are two extremely similar functions, tutorial does it but why? can be combined
-
+	cmake currently gets libraries like stb and tinyobjloader from a folder that contains the .h files, can be changed to fetch in on build
 */
 
 class Engine {
