@@ -52,7 +52,7 @@ if(SLANG_SHADER_SOURCES)
 endif()
 
 # --- Assets ---
-file(GLOB MODEL_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/*.obj)
+file(GLOB MODEL_FILES ${CMAKE_CURRENT_SOURCE_DIR}/models/*.obj)
 if(MODEL_FILES)
     file(COPY ${MODEL_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/models)
 endif()
