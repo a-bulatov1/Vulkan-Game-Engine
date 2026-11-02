@@ -117,6 +117,7 @@ class Engine {
 	vk::raii::Pipeline graphicsPipeline = nullptr;
 
 	uint32_t mipLevels = 0;
+	vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 	vk::raii::Image textureImage = nullptr;
 	vk::raii::DeviceMemory textureImageMemory = nullptr;
 	vk::raii::ImageView textureImageView = nullptr;
@@ -125,6 +126,10 @@ class Engine {
 	vk::raii::Image depthImage = nullptr;
 	vk::raii::DeviceMemory depthImageMemory = nullptr;
 	vk::raii::ImageView depthImageView = nullptr;
+
+	vk::raii::Image colorImage = nullptr;
+	vk::raii::DeviceMemory colorImageMemory = nullptr;
+	vk::raii::ImageView colorImageView = nullptr;
 
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
@@ -181,6 +186,7 @@ class Engine {
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createCommandPool();
+		createColorResources();
 		createDepthResources();
 		createTextureImage();
 		createTextureImageView();
@@ -310,6 +316,7 @@ class Engine {
 			throw std::runtime_error("failed to find a suitable GPU!");
 		}
   		physicalDevice = *devIter;
+		msaaSamples    = getMaxUsableSampleCount();
 	}
 
 	bool isDeviceSuitable(vk::raii::PhysicalDevice const &physicalDevice) {
@@ -367,7 +374,7 @@ class Engine {
 		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
 			vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
 		featureChain = {
-			{.features = {.samplerAnisotropy = true}},                                    // vk::PhysicalDeviceFeatures2 (empty for now)
+			{.features = {.sampleRateShading = true, .samplerAnisotropy = true}},                                    // vk::PhysicalDeviceFeatures2 (empty for now)
 			{.shaderDrawParameters = true},        // Enable shader draw parameters from Vulkan 1.1
 			{.synchronization2 = true, .dynamicRendering = true},            // Enable dynamic rendering from Vulkan 1.3
 			{.extendedDynamicState = true}         // Enable extended dynamic state from the extension
@@ -525,8 +532,9 @@ class Engine {
 		};
 
 		vk::PipelineMultisampleStateCreateInfo multisampling{
-			.rasterizationSamples = vk::SampleCountFlagBits::e1, 
-			.sampleShadingEnable = vk::False
+			.rasterizationSamples = msaaSamples, 
+			.sampleShadingEnable = vk::True,
+			.minSampleShading = 0.2f  
 		};
 
 		vk::PipelineDepthStencilStateCreateInfo depthStencil{
@@ -620,8 +628,22 @@ class Engine {
 	void createDepthResources() {
 		vk::Format depthFormat = findDepthFormat();
 
-		std::tie(depthImage, depthImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, 1, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal);
+		std::tie(depthImage, depthImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal);
 		depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
+	}
+
+	void createColorResources() {
+		vk::Format colorFormat = swapChainSurfaceFormat.format;
+		std::tie(colorImage, colorImageMemory) = createImage(
+			swapChainExtent.width,
+			swapChainExtent.height,
+			1,
+			msaaSamples,
+			colorFormat,
+			vk::ImageTiling::eOptimal,
+			vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
+			vk::MemoryPropertyFlagBits::eDeviceLocal);
+		colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor, 1);
 	}
 
 	std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties) {
@@ -667,7 +689,7 @@ class Engine {
 		stbi_image_free(pixels);
 
 		std::tie(textureImage, textureImageMemory) = createImage(
-			texWidth, texHeight, mipLevels,
+			texWidth, texHeight, mipLevels, vk::SampleCountFlagBits::e1,
 			vk::Format::eR8G8B8A8Srgb,
 			vk::ImageTiling::eOptimal,
 			vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc,
@@ -748,6 +770,20 @@ class Engine {
 		commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
 	}
 
+	vk::SampleCountFlagBits getMaxUsableSampleCount() {
+		vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties();
+
+		vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+		if (counts & vk::SampleCountFlagBits::e64) { return vk::SampleCountFlagBits::e64; }
+		if (counts & vk::SampleCountFlagBits::e32) { return vk::SampleCountFlagBits::e32; }
+		if (counts & vk::SampleCountFlagBits::e16) { return vk::SampleCountFlagBits::e16; }
+		if (counts & vk::SampleCountFlagBits::e8) { return vk::SampleCountFlagBits::e8; }
+		if (counts & vk::SampleCountFlagBits::e4) { return vk::SampleCountFlagBits::e4; }
+		if (counts & vk::SampleCountFlagBits::e2) { return vk::SampleCountFlagBits::e2; }
+
+		return vk::SampleCountFlagBits::e1;
+	}
+
 	void createTextureImageView() {
 		textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
 	}
@@ -784,14 +820,21 @@ class Engine {
 	}
 
 	std::pair<vk::raii::Image, vk::raii::DeviceMemory> createImage(
-		uint32_t width, uint32_t height, uint32_t mipLevels, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties) {
+		uint32_t width, 
+		uint32_t height, 
+		uint32_t mipLevels, 
+	    vk::SampleCountFlagBits numSamples,
+		vk::Format format, 
+		vk::ImageTiling tiling, 
+		vk::ImageUsageFlags usage, 
+		vk::MemoryPropertyFlags properties) {
 		vk::ImageCreateInfo imageInfo{
 			.imageType   = vk::ImageType::e2D,
 		    .format      = format,
 		    .extent      = {width, height, 1},
 		    .mipLevels   = mipLevels,
 		    .arrayLayers = 1,
-		    .samples     = vk::SampleCountFlagBits::e1,
+		    .samples     = numSamples,
 		    .tiling      = tiling,
 		    .usage       = usage,
 		    .sharingMode = vk::SharingMode::eExclusive
@@ -1045,6 +1088,17 @@ class Engine {
 			vk::ImageAspectFlagBits::eColor
 		);
 
+		transition_image_layout(
+      		*colorImage,
+      		vk::ImageLayout::eUndefined,
+      		vk::ImageLayout::eColorAttachmentOptimal,
+      		vk::AccessFlagBits2::eColorAttachmentWrite,
+      		vk::AccessFlagBits2::eColorAttachmentWrite,
+      		vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+      		vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+      		vk::ImageAspectFlagBits::eColor
+		);
+
 		// Transition depth image to depth attachment optimal layout
 		transition_image_layout(
 			*depthImage,
@@ -1060,12 +1114,16 @@ class Engine {
 		vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f); // Clear color (important)
 		vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
 
-		vk::RenderingAttachmentInfo attachmentInfo = {
-		    .imageView   = swapChainImageViews[imageIndex],
-		    .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-		    .loadOp      = vk::AttachmentLoadOp::eClear,
-		    .storeOp     = vk::AttachmentStoreOp::eStore,
-		    .clearValue  = clearColor};
+		// Color attachment (multisampled) with resolve attachment
+		vk::RenderingAttachmentInfo colorAttachment = {
+		    .imageView          = colorImageView,
+		    .imageLayout        = vk::ImageLayout::eColorAttachmentOptimal,
+		    .resolveMode        = vk::ResolveModeFlagBits::eAverage,
+		    .resolveImageView   = swapChainImageViews[imageIndex],
+		    .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+		    .loadOp             = vk::AttachmentLoadOp::eClear,
+		    .storeOp            = vk::AttachmentStoreOp::eStore,
+		    .clearValue         = clearColor};
 		vk::RenderingAttachmentInfo depthAttachmentInfo = {
 			.imageView   = depthImageView,
 			.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
@@ -1076,7 +1134,7 @@ class Engine {
 		    .renderArea           = {.offset = {0, 0}, .extent = swapChainExtent},
 		    .layerCount           = 1,
 		    .colorAttachmentCount = 1,
-		    .pColorAttachments    = &attachmentInfo,
+		    .pColorAttachments    = &colorAttachment,
 			.pDepthAttachment	  = &depthAttachmentInfo};
 
 		commandBuffer.beginRendering(renderingInfo);
@@ -1248,6 +1306,7 @@ class Engine {
 		cleanupSwapChain();
 		createSwapChain();
 		createImageViews();
+		createColorResources();
 	    createDepthResources();
 	}
 
