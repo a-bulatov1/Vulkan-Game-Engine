@@ -212,8 +212,7 @@ class Engine {
 
 		// Get the required layers
 		std::vector<char const*> requiredLayers;
-		if (enableValidationLayers)
-		{
+		if (enableValidationLayers) {
 			requiredLayers.assign(validationLayers.begin(), validationLayers.end());
 		}
 
