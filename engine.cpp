@@ -45,6 +45,13 @@ constexpr bool enableValidationLayers = true;
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
+// Application info structure to store feature support flags
+struct AppInfo {
+	bool dynamicRenderingSupported   = false;
+	bool timelineSemaphoresSupported = false;
+	bool synchronization2Supported   = false;
+};
+
 struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 color;
@@ -96,6 +103,7 @@ class Engine {
 	}
 
   private:
+	AppInfo appInfo;
 	GLFWwindow *window = nullptr;
 	vk::raii::Context context;
 	vk::raii::Instance instance = nullptr;
@@ -111,6 +119,10 @@ class Engine {
 	vk::SurfaceFormatKHR swapChainSurfaceFormat;
 	vk::Extent2D swapChainExtent;
 	std::vector<vk::raii::ImageView> swapChainImageViews;
+
+	// Traditional render pass (fallback for non-dynamic rendering)
+	vk::raii::RenderPass renderPass = nullptr;
+	std::vector<vk::raii::Framebuffer> swapChainFramebuffers;
 
 	vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
@@ -180,9 +192,16 @@ class Engine {
 		setupDebugMessenger();
 		createSurface();
 		pickPhysicalDevice();
+		detectFeatureSupport();
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
+		// Create traditional render pass if dynamic rendering is not supported
+		if (!appInfo.dynamicRenderingSupported) {
+			createRenderPass();
+			createFramebuffers();
+		}
+
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createCommandPool();
@@ -199,6 +218,11 @@ class Engine {
 		createDescriptorSets();
 		createCommandBuffers();
 		createSyncObjects();
+		// Print feature support summary
+		std::cout << "\nFeature support summary:\n";
+		std::cout << "- Dynamic Rendering: " << (appInfo.dynamicRenderingSupported ? "Yes" : "No") << "\n";
+		std::cout << "- Timeline Semaphores: " << (appInfo.timelineSemaphoresSupported ? "Yes" : "No") << "\n";
+		std::cout << "- Synchronization2: " << (appInfo.synchronization2Supported ? "Yes" : "No") << "\n";
 	}
 
 	void createInstance() {
@@ -348,6 +372,75 @@ class Engine {
 		return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
 	}
 
+	void detectFeatureSupport() {
+		// Get device properties to check Vulkan version
+		vk::PhysicalDeviceProperties deviceProperties = physicalDevice.getProperties();
+
+		// Get available extensions
+		std::vector<vk::ExtensionProperties> availableExtensions = physicalDevice.enumerateDeviceExtensionProperties();
+
+		// Check for dynamic rendering support
+		if (deviceProperties.apiVersion >= VK_VERSION_1_3) {
+			appInfo.dynamicRenderingSupported = true;
+			std::cout << "Dynamic rendering supported via Vulkan 1.3\n";
+		}
+		else {
+			// Check for the extension on older Vulkan versions
+			for (const auto &extension : availableExtensions) {
+				if (strcmp(extension.extensionName, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) == 0) {
+					appInfo.dynamicRenderingSupported = true;
+					std::cout << "Dynamic rendering supported via extension\n";
+					break;
+				}
+			}
+		}
+
+		// Check for timeline semaphores support
+		if (deviceProperties.apiVersion >= VK_VERSION_1_2) {
+			appInfo.timelineSemaphoresSupported = true;
+			std::cout << "Timeline semaphores supported via Vulkan 1.2\n";
+		}
+		else {
+			// Check for the extension on older Vulkan versions
+			for (const auto &extension : availableExtensions) {
+				if (strcmp(extension.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0) {
+					appInfo.timelineSemaphoresSupported = true;
+					std::cout << "Timeline semaphores supported via extension\n";
+					break;
+				}
+			}
+		}
+
+		// Check for synchronization2 support
+		if (deviceProperties.apiVersion >= VK_VERSION_1_3) {
+			appInfo.synchronization2Supported = true;
+			std::cout << "Synchronization2 supported via Vulkan 1.3\n";
+		}
+		else {
+			// Check for the extension on older Vulkan versions
+			for (const auto &extension : availableExtensions) {
+				if (strcmp(extension.extensionName, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) == 0) {
+					appInfo.synchronization2Supported = true;
+					std::cout << "Synchronization2 supported via extension\n";
+					break;
+				}
+			}
+		}
+
+		// Add required extensions based on feature support
+		if (appInfo.dynamicRenderingSupported && deviceProperties.apiVersion < VK_VERSION_1_3) {
+			requiredDeviceExtension.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+		}
+
+		if (appInfo.timelineSemaphoresSupported && deviceProperties.apiVersion < VK_VERSION_1_2) {
+			requiredDeviceExtension.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+		}
+
+		if (appInfo.synchronization2Supported && deviceProperties.apiVersion < VK_VERSION_1_3) {
+			requiredDeviceExtension.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+		}
+	}
+
 	void createLogicalDevice() {
 		std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
 		auto graphicsQueueFamilyProperty = std::ranges::find_if(queueFamilyProperties, [](auto const &qfp) 
@@ -474,6 +567,104 @@ class Engine {
 		swapChainImageViews.reserve(swapChainImages.size());
 		for (auto &image: swapChainImages) {
 			swapChainImageViews.emplace_back(createImageView(image, swapChainSurfaceFormat.format, vk::ImageAspectFlagBits::eColor, 1));
+		}
+	}
+
+		void createRenderPass() {
+		std::cout << "Creating traditional render pass\n";
+
+		// Color attachment description
+		vk::AttachmentDescription colorAttachment{
+		    .format         = swapChainSurfaceFormat.format,
+		    .samples        = msaaSamples,
+		    .loadOp         = vk::AttachmentLoadOp::eClear,
+		    .storeOp        = vk::AttachmentStoreOp::eStore,
+		    .stencilLoadOp  = vk::AttachmentLoadOp::eDontCare,
+		    .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+		    .initialLayout  = vk::ImageLayout::eUndefined,
+		    .finalLayout    = vk::ImageLayout::eColorAttachmentOptimal};
+
+		vk::AttachmentDescription depthAttachment{
+		    .format         = findDepthFormat(),
+		    .samples        = msaaSamples,
+		    .loadOp         = vk::AttachmentLoadOp::eClear,
+		    .storeOp        = vk::AttachmentStoreOp::eDontCare,
+		    .stencilLoadOp  = vk::AttachmentLoadOp::eDontCare,
+		    .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+		    .initialLayout  = vk::ImageLayout::eUndefined,
+		    .finalLayout    = vk::ImageLayout::eDepthStencilAttachmentOptimal};
+
+		vk::AttachmentDescription colorAttachmentResolve{
+		    .format         = swapChainSurfaceFormat.format,
+		    .samples        = vk::SampleCountFlagBits::e1,
+		    .loadOp         = vk::AttachmentLoadOp::eDontCare,
+		    .storeOp        = vk::AttachmentStoreOp::eStore,
+		    .stencilLoadOp  = vk::AttachmentLoadOp::eDontCare,
+		    .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+		    .initialLayout  = vk::ImageLayout::eUndefined,
+		    .finalLayout    = vk::ImageLayout::ePresentSrcKHR};
+
+		// Subpass references
+		vk::AttachmentReference colorAttachmentRef{
+		    .attachment = 0,
+		    .layout     = vk::ImageLayout::eColorAttachmentOptimal};
+
+		vk::AttachmentReference depthAttachmentRef{
+		    .attachment = 1,
+		    .layout     = vk::ImageLayout::eDepthStencilAttachmentOptimal};
+
+		vk::AttachmentReference colorAttachmentResolveRef{
+		    .attachment = 2,
+		    .layout     = vk::ImageLayout::eColorAttachmentOptimal};
+
+		// Subpass description
+		vk::SubpassDescription subpass{
+		    .pipelineBindPoint       = vk::PipelineBindPoint::eGraphics,
+		    .colorAttachmentCount    = 1,
+		    .pColorAttachments       = &colorAttachmentRef,
+		    .pResolveAttachments     = &colorAttachmentResolveRef,
+		    .pDepthStencilAttachment = &depthAttachmentRef};
+
+		// Dependency to ensure proper image layout transitions
+		vk::SubpassDependency dependency{
+		    .srcSubpass    = VK_SUBPASS_EXTERNAL,
+		    .dstSubpass    = 0,
+		    .srcStageMask  = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+		    .dstStageMask  = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+		    .srcAccessMask = vk::AccessFlagBits::eNone,
+		    .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite};
+
+		// Create the render pass
+		std::array attachments = {colorAttachment, depthAttachment, colorAttachmentResolve};
+		vk::RenderPassCreateInfo renderPassInfo{
+		    .attachmentCount = static_cast<uint32_t>(attachments.size()),
+		    .pAttachments    = attachments.data(),
+		    .subpassCount    = 1,
+		    .pSubpasses      = &subpass,
+		    .dependencyCount = 1,
+		    .pDependencies   = &dependency};
+
+		renderPass = vk::raii::RenderPass(device, renderPassInfo);
+	}
+
+	void createFramebuffers() {
+		swapChainFramebuffers.resize(swapChainImageViews.size());
+
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			vk::ImageView attachments[] = {
+				swapChainImageViews[i]
+			};
+
+			vk::FramebufferCreateInfo framebufferInfo{
+				.renderPass = renderPass,
+				.attachmentCount = 1,
+				.pAttachments = attachments,
+				.width = swapChainExtent.width,
+				.height = swapChainExtent.height,
+				.layers = 1
+			};
+
+			swapChainFramebuffers[i] = device.createFramebuffer(framebufferInfo);
 		}
 	}
 
