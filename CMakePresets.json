@@ -2,7 +2,7 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "debug",
+      "name": "debug_windows",
       "displayName": "UCRT64 Debug",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
@@ -12,9 +12,19 @@
         "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
         "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
       }
+    },
+    {
+      "name": "debug_linux",
+      "displayName": "Linux Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "debug", "configurePreset": "debug" }
+    { "name": "debug_windows", "configurePreset": "debug_windows" },
+    { "name": "debug_linux", "configurePreset": "debug_linux"}
   ]
 }
