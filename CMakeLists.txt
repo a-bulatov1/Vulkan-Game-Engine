@@ -11,8 +11,31 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(Vulkan 1.4.335 REQUIRED)
-#find_package(tinygltf REQUIRED)        # uncomment for the glTF/KTX chapter
-#find_package(KTX REQUIRED)
+
+include(FetchContent)
+set(FETCHCONTENT_QUIET OFF)
+
+set(TINYGLTF_HEADER_ONLY ON CACHE INTERNAL "" FORCE)
+set(TINYGLTF_INSTALL OFF CACHE INTERNAL "" FORCE)
+set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE INTERNAL "" FORCE)
+
+FetchContent_Declare(tinygltf
+    GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+    GIT_TAG v3.1.0
+    GIT_PROGRESS TRUE)
+FetchContent_MakeAvailable(tinygltf)
+
+set(KTX_FEATURE_TOOLS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_LOADTEST_APPS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(ktx
+    GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
+    GIT_TAG v4.4.2
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE)
+FetchContent_MakeAvailable(ktx)
 
 find_program(SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/bin REQUIRED)
 
@@ -22,9 +45,9 @@ set_target_properties(engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/engine
     CXX_STANDARD 20)
 
-target_include_directories(engine SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libraries)
+target_include_directories(engine SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libraries ${tinygltf_SOURCE_DIR})
 
-target_link_libraries(engine Vulkan::Vulkan glfw glm::glm)
+target_link_libraries(engine PRIVATE Vulkan::Vulkan glfw glm::glm ktx)
 target_compile_definitions(engine PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
     VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
