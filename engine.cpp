@@ -129,7 +129,6 @@ class Engine {
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
 	vk::raii::Pipeline graphicsPipeline = nullptr;
 
-	uint32_t mipLevels = 1;
 	vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 	vk::raii::Image textureImage = nullptr;
 	vk::raii::DeviceMemory textureImageMemory = nullptr;
@@ -546,12 +545,12 @@ class Engine {
 		swapChainImages = swapChain.getImages();
 	}
 
-	vk::raii::ImageView createImageView(vk::Image const &image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels) {
+	vk::raii::ImageView createImageView(vk::Image const &image, vk::Format format, vk::ImageAspectFlags aspectFlags) {
 		vk::ImageViewCreateInfo viewInfo{
 		    .image            = image,
 		    .viewType         = vk::ImageViewType::e2D,
 		    .format           = format,
-		    .subresourceRange = {.aspectMask = aspectFlags, .baseMipLevel = 0, .levelCount = mipLevels, .baseArrayLayer = 0, .layerCount = 1}};
+		    .subresourceRange = {.aspectMask = aspectFlags, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}};
 		return vk::raii::ImageView(logicalDevice, viewInfo);
 	}
 
@@ -560,7 +559,7 @@ class Engine {
 
 		swapChainImageViews.reserve(swapChainImages.size());
 		for (auto &image: swapChainImages) {
-			swapChainImageViews.emplace_back(createImageView(image, swapChainSurfaceFormat.format, vk::ImageAspectFlagBits::eColor, 1));
+			swapChainImageViews.emplace_back(createImageView(image, swapChainSurfaceFormat.format, vk::ImageAspectFlagBits::eColor));
 		}
 	}
 
@@ -828,8 +827,8 @@ class Engine {
 	void createDepthResources() {
 		vk::Format depthFormat = findDepthFormat();
 
-		std::tie(depthImage, depthImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal);
-		depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
+		std::tie(depthImage, depthImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, msaaSamples, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal);
+		depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
 	}
 
 	void createColorResources() {
@@ -837,13 +836,12 @@ class Engine {
 		std::tie(colorImage, colorImageMemory) = createImage(
 			swapChainExtent.width,
 			swapChainExtent.height,
-			1,
 			msaaSamples,
 			colorFormat,
 			vk::ImageTiling::eOptimal,
 			vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
 			vk::MemoryPropertyFlagBits::eDeviceLocal);
-		colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor, 1);
+		colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor);
 	}
 
 	std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties) {
@@ -890,7 +888,7 @@ class Engine {
 		uint32_t texHeight = kTexture->baseHeight;
 		ktx_size_t imageSize = ktxTexture_GetImageSize(kTexture, 0);
 		ktx_uint8_t* ktxTextureData = ktxTexture_GetData(kTexture);
-
+		
 		// Create staging buffer
 		auto [stagingBuffer, stagingBufferMemory] =
 			createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
@@ -905,7 +903,7 @@ class Engine {
 
 		// Create the texture image
 		std::tie(textureImage, textureImageMemory) = createImage(
-			texWidth, texHeight, 1, vk::SampleCountFlagBits::e1, textureFormat, vk::ImageTiling::eOptimal,
+			texWidth, texHeight, vk::SampleCountFlagBits::e1, textureFormat, vk::ImageTiling::eOptimal,
 			vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
 			vk::MemoryPropertyFlagBits::eDeviceLocal);
 
@@ -917,73 +915,6 @@ class Engine {
 
 		// Cleanup KTX resources
 		ktxTexture_Destroy(kTexture);
-	}
-
-	void generateMipmaps(
-		vk::raii::CommandBuffer &commandBuffer,
-		vk::raii::Image &image,
-		vk::Format imageFormat,
-		int32_t texWidth,
-		int32_t texHeight,
-		uint32_t mipLevels) {
-		// Check if image format supports linear blitting
-		vk::FormatProperties formatProperties = physicalDevice.getFormatProperties(imageFormat);
-		if (!(formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)) {
-			throw std::runtime_error("texture image format does not support linear blitting!");
-		}
-
-		vk::ImageMemoryBarrier barrier = {
-			.srcAccessMask       = vk::AccessFlagBits::eTransferWrite,
-		    .dstAccessMask       = vk::AccessFlagBits::eTransferRead,
-		    .oldLayout           = vk::ImageLayout::eTransferDstOptimal,
-		    .newLayout           = vk::ImageLayout::eTransferSrcOptimal,
-		    .srcQueueFamilyIndex = vk::QueueFamilyIgnored,
-		    .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
-		    .image               = image,
-		    .subresourceRange    = {.aspectMask = vk::ImageAspectFlagBits::eColor, .levelCount = 1, .layerCount = 1}};
-
-		int32_t mipWidth  = texWidth;
-		int32_t mipHeight = texHeight;
-
-		for (uint32_t i = 1; i < mipLevels; i++) {
-			barrier.subresourceRange.baseMipLevel = i - 1;
-			barrier.oldLayout                     = vk::ImageLayout::eTransferDstOptimal;
-			barrier.newLayout                     = vk::ImageLayout::eTransferSrcOptimal;
-			barrier.srcAccessMask                 = vk::AccessFlagBits::eTransferWrite;
-			barrier.dstAccessMask                 = vk::AccessFlagBits::eTransferRead;
-
-			commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
-
-			vk::ImageBlit blit = {
-				.srcSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = i - 1, .layerCount = 1},
-			    .srcOffsets     = std::array<vk::Offset3D, 2>({{}, {mipWidth, mipHeight, 1}}),
-			    .dstSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = i, .layerCount = 1},
-			    .dstOffsets     = std::array<vk::Offset3D, 2>({{}, {1 < mipWidth ? mipWidth / 2 : 1, 1 < mipHeight ? mipHeight / 2 : 1, 1}})};
-
-			commandBuffer.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
-
-			barrier.oldLayout     = vk::ImageLayout::eTransferSrcOptimal;
-			barrier.newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal;
-			barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
-			barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-
-			commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
-
-			if (1 < mipWidth) {
-				mipWidth /= 2;
-			}
-			if (1 < mipHeight) {
-				mipHeight /= 2;
-			}
-		}
-
-		barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-		barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-		barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-		barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-		barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-
-		commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
 	}
 
 	vk::SampleCountFlagBits getMaxUsableSampleCount() {
@@ -1001,7 +932,7 @@ class Engine {
 	}
 
 	void createTextureImageView() {
-		textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
+		textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 	}
 
 	void createTextureSampler() {
@@ -1039,8 +970,7 @@ class Engine {
 
 	std::pair<vk::raii::Image, vk::raii::DeviceMemory> createImage(
 		uint32_t width, 
-		uint32_t height, 
-		uint32_t mipLevels, 
+		uint32_t height,  
 	    vk::SampleCountFlagBits numSamples,
 		vk::Format format, 
 		vk::ImageTiling tiling, 
@@ -1050,7 +980,7 @@ class Engine {
 			.imageType   = vk::ImageType::e2D,
 		    .format      = format,
 		    .extent      = {width, height, 1},
-		    .mipLevels   = mipLevels,
+		    .mipLevels   = 1,
 		    .arrayLayers = 1,
 		    .samples     = numSamples,
 		    .tiling      = tiling,
