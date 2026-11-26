@@ -21,7 +21,8 @@ set(TINYGLTF_BUILD_LOADER_EXAMPLE OFF CACHE INTERNAL "" FORCE)
 
 FetchContent_Declare(tinygltf
     GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
-    GIT_TAG v3.1.0
+    GIT_TAG v2.9.0
+    GIT_SHALLOW TRUE
     GIT_PROGRESS TRUE)
 FetchContent_MakeAvailable(tinygltf)
 
@@ -75,14 +76,17 @@ if(SLANG_SHADER_SOURCES)
 endif()
 
 # --- Assets ---
-file(GLOB MODEL_FILES ${CMAKE_CURRENT_SOURCE_DIR}/models/*.obj)
+file(GLOB MODEL_FILES 
+    ${CMAKE_CURRENT_SOURCE_DIR}/models/*.obj
+    ${CMAKE_CURRENT_SOURCE_DIR}/models/*.glb)
 if(MODEL_FILES)
     file(COPY ${MODEL_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/models)
 endif()
 
 file(GLOB TEXTURE_FILES 
     ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.png
-    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.jpg)
+    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.jpg
+    ${CMAKE_CURRENT_SOURCE_DIR}/textures/*.ktx2)
 if(TEXTURE_FILES)
     file(COPY ${TEXTURE_FILES} DESTINATION ${CMAKE_BINARY_DIR}/engine/textures)
 endif()

@@ -23,16 +23,17 @@ import vulkan_hpp;
 #include <glm/gtx/hash.hpp>
 #include <chrono> // Timekeeping
 #include <array>
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
-#define TINYOBJLOADER_IMPLEMENTATION
-#include <tiny_obj_loader.h>
+#define TINYGLTF_IMPLEMENTATION
+#define TINYGLTF_NO_STB_IMAGE
+#define TINYGLTF_NO_STB_IMAGE_WRITE
+#include <tiny_gltf.h>
+#include <ktx.h>
 
 const uint32_t WIDTH  = 800;
 const uint32_t HEIGHT = 600;
 //Temporary
-const std::string MODEL_PATH = "models/viking_room.obj";
-const std::string TEXTURE_PATH = "textures/viking_room.png";
+const std::string MODEL_PATH = "models/viking_room.glb";
+const std::string TEXTURE_PATH = "textures/viking_room.ktx2";
 
 const std::vector<char const*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -128,7 +129,7 @@ class Engine {
 	vk::raii::PipelineLayout pipelineLayout = nullptr;
 	vk::raii::Pipeline graphicsPipeline = nullptr;
 
-	uint32_t mipLevels = 0;
+	uint32_t mipLevels = 1;
 	vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 	vk::raii::Image textureImage = nullptr;
 	vk::raii::DeviceMemory textureImageMemory = nullptr;
@@ -863,43 +864,59 @@ class Engine {
 	}
 
 	void copyBuffer(vk::raii::Buffer &srcBuffer, vk::raii::Buffer &dstBuffer, vk::DeviceSize size) {
-		vk::raii::CommandBuffer commandCopyBuffer = beginSingleTimeCommands();
+		vk::CommandBufferAllocateInfo allocInfo{.commandPool = *commandPool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1};
+		vk::raii::CommandBuffer commandCopyBuffer = std::move(logicalDevice.allocateCommandBuffers(allocInfo).front());
+		commandCopyBuffer.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 		commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy{.size = size});
-		endSingleTimeCommands(std::move(commandCopyBuffer));
+		commandCopyBuffer.end();
+		graphicsQueue.submit(vk::SubmitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commandCopyBuffer}, nullptr);
+		graphicsQueue.waitIdle();
 	}
 
 	void createTextureImage() {
-		int texWidth, texHeight, texChannels;
-		stbi_uc *pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-		vk::DeviceSize imageSize = texWidth * texHeight * 4;
-		mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+		// Load KTX2 texture instead of using stb_image
+		ktxTexture* kTexture;
+		KTX_error_code result = ktxTexture_CreateFromNamedFile(
+			TEXTURE_PATH.c_str(),
+			KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+			&kTexture);
 
-		if (!pixels) {
-			throw std::runtime_error("failed to load texture image!");
+		if (result != KTX_SUCCESS) {
+			throw std::runtime_error("failed to load ktx texture image!");
 		}
 
-		auto [stagingBuffer, stagingBufferMemory] =
-		    createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+		// Get texture dimensions and data
+		uint32_t texWidth = kTexture->baseWidth;
+		uint32_t texHeight = kTexture->baseHeight;
+		ktx_size_t imageSize = ktxTexture_GetImageSize(kTexture, 0);
+		ktx_uint8_t* ktxTextureData = ktxTexture_GetData(kTexture);
 
-		void *data = stagingBufferMemory.mapMemory(0, imageSize);
-		memcpy(data, pixels, imageSize);
+		// Create staging buffer
+		auto [stagingBuffer, stagingBufferMemory] =
+			createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+		// Copy texture data to staging buffer
+		void* data = stagingBufferMemory.mapMemory(0, imageSize);
+		memcpy(data, ktxTextureData, imageSize);
 		stagingBufferMemory.unmapMemory();
 
-		stbi_image_free(pixels);
+		// Determine the Vulkan format from KTX format
+		vk::Format textureFormat = vk::Format::eR8G8B8A8Srgb; // Default format, should be determined from KTX metadata
 
+		// Create the texture image
 		std::tie(textureImage, textureImageMemory) = createImage(
-			texWidth, texHeight, mipLevels, vk::SampleCountFlagBits::e1,
-			vk::Format::eR8G8B8A8Srgb,
-			vk::ImageTiling::eOptimal,
-			vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc,
-			vk::MemoryPropertyFlagBits::eDeviceLocal
-		);
+			texWidth, texHeight, 1, vk::SampleCountFlagBits::e1, textureFormat, vk::ImageTiling::eOptimal,
+			vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+			vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-		vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands();
-		transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
-		copyBufferToImage(commandBuffer, stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-		generateMipmaps(commandBuffer, textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
-		endSingleTimeCommands(std::move(commandBuffer));
+		// Copy data from staging buffer to texture image
+		// Only usages of transitionImageLayout, opportunity to fix and refactor
+		transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+		copyBufferToImage(stagingBuffer, textureImage, texWidth, texHeight);
+		transitionImageLayout(textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);;
+
+		// Cleanup KTX resources
+		ktxTexture_Destroy(kTexture);
 	}
 
 	void generateMipmaps(
@@ -1006,16 +1023,18 @@ class Engine {
 		textureSampler = vk::raii::Sampler(logicalDevice, samplerInfo);
 	}
 
-	void copyBufferToImage(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Buffer &buffer, vk::raii::Image &image, uint32_t width, uint32_t height) {
+	void copyBufferToImage(const vk::raii::Buffer &buffer, vk::raii::Image &image, uint32_t width, uint32_t height) {
+		std::unique_ptr<vk::raii::CommandBuffer> commandBuffer = beginSingleTimeCommands();
 		vk::BufferImageCopy region{
-			.bufferOffset      = 0,
+		    .bufferOffset      = 0,
 		    .bufferRowLength   = 0,
 		    .bufferImageHeight = 0,
-		    .imageSubresource  = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+		    .imageSubresource  = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
 		    .imageOffset       = {0, 0, 0},
 		    .imageExtent       = {width, height, 1}
 		};
-		commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, region);
+		commandBuffer->copyBufferToImage(*buffer, *image, vk::ImageLayout::eTransferDstOptimal, {region});
+		endSingleTimeCommands(*commandBuffer);
 	}
 
 	std::pair<vk::raii::Image, vk::raii::DeviceMemory> createImage(
@@ -1052,33 +1071,35 @@ class Engine {
 		return {std::move(image), std::move(imageMemory)};
 	}
 
-	void transitionImageLayout(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Image &image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, uint32_t mipLevels) {
+	void transitionImageLayout(const vk::raii::Image &image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout) {
+		auto commandBuffer = beginSingleTimeCommands();
+
 		vk::ImageMemoryBarrier barrier{
-			.oldLayout           = oldLayout,
-		    .newLayout           = newLayout,
-		    .srcQueueFamilyIndex = vk::QueueFamilyIgnored,
-		    .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
-		    .image               = image,
-		    .subresourceRange    = {.aspectMask = vk::ImageAspectFlagBits::eColor, .levelCount = mipLevels, .layerCount = 1}
-		};
+		    .oldLayout        = oldLayout,
+		    .newLayout        = newLayout,
+		    .image            = *image,
+		    .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
 
 		vk::PipelineStageFlags sourceStage;
 		vk::PipelineStageFlags destinationStage;
 
-		if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal) {
+		if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal){
 			barrier.srcAccessMask = {};
 			barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+
 			sourceStage      = vk::PipelineStageFlagBits::eTopOfPipe;
 			destinationStage = vk::PipelineStageFlagBits::eTransfer;
 		} else if (oldLayout == vk::ImageLayout::eTransferDstOptimal && newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
 			barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 			barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
 			sourceStage      = vk::PipelineStageFlagBits::eTransfer;
 			destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
 		} else {
 			throw std::invalid_argument("unsupported layout transition!");
 		}
-		commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
+		commandBuffer->pipelineBarrier(sourceStage, destinationStage, {}, {}, nullptr, barrier);
+		endSingleTimeCommands(*commandBuffer);
 	}
 
 	void transition_image_layout(
@@ -1116,21 +1137,21 @@ class Engine {
 		commandBuffers[frameIndex].pipelineBarrier2(dependency_info);
 	}
 
-
-	vk::raii::CommandBuffer beginSingleTimeCommands() {
+	std::unique_ptr<vk::raii::CommandBuffer> beginSingleTimeCommands() {
 		vk::CommandBufferAllocateInfo allocInfo{
-			.commandPool = commandPool, 
-			.level = vk::CommandBufferLevel::ePrimary, 
-			.commandBufferCount = 1
-		};
-		vk::raii::CommandBuffer commandBuffer = std::move(vk::raii::CommandBuffers(logicalDevice, allocInfo).front());
+		    .commandPool        = *commandPool,
+		    .level              = vk::CommandBufferLevel::ePrimary,
+		    .commandBufferCount = 1};
+		std::unique_ptr<vk::raii::CommandBuffer> commandBuffer = std::make_unique<vk::raii::CommandBuffer>(std::move(vk::raii::CommandBuffers(logicalDevice, allocInfo).front()));
 
-		vk::CommandBufferBeginInfo beginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
-		commandBuffer.begin(beginInfo);
-		return std::move(commandBuffer);
+		vk::CommandBufferBeginInfo beginInfo{
+		    .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
+		commandBuffer->begin(beginInfo);
+
+		return commandBuffer;
 	}
 
-	void endSingleTimeCommands(vk::raii::CommandBuffer &&commandBuffer) {
+	void endSingleTimeCommands(const vk::raii::CommandBuffer &commandBuffer) const {
 		commandBuffer.end();
 
 		vk::SubmitInfo submitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commandBuffer};
@@ -1139,43 +1160,107 @@ class Engine {
 	}
 
 	void loadModel() {
-		tinyobj::attrib_t attrib;
-		std::vector<tinyobj::shape_t> shapes;
-		std::vector<tinyobj::material_t> materials;
-		std::string warn, err;
+		// Use tinygltf to load the model instead of tinyobjloader
+		tinygltf::Model model;
+		tinygltf::TinyGLTF loader;
+		std::string err;
+		std::string warn;
 
-		if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str())) {
-			throw std::runtime_error(warn + err);
+		bool ret = loader.LoadBinaryFromFile(&model, &err, &warn, MODEL_PATH);
+
+		if (!warn.empty()) {
+			std::cout << "glTF warning: " << warn << std::endl;
 		}
 
-		std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+		if (!err.empty()) {
+			std::cout << "glTF error: " << err << std::endl;
+		}
 
-		for (const auto &shape : shapes) {
-			for (const auto &index : shape.mesh.indices) {
-				Vertex vertex{};
+		if (!ret) {
+			throw std::runtime_error("Failed to load glTF model");
+		}
 
-				vertex.pos = {
-				    attrib.vertices[3 * index.vertex_index + 0],
-				    attrib.vertices[3 * index.vertex_index + 1],
-				    attrib.vertices[3 * index.vertex_index + 2]};
+		vertices.clear();
+		indices.clear();
 
-				vertex.texCoord = {
-				    attrib.texcoords[2 * index.texcoord_index + 0],
-				    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]};
+		// Process all meshes in the model
+		for (const auto &mesh : model.meshes) {
+			for (const auto &primitive : mesh.primitives) {
+				// Get indices
+				const tinygltf::Accessor   &indexAccessor   = model.accessors[primitive.indices];
+				const tinygltf::BufferView &indexBufferView = model.bufferViews[indexAccessor.bufferView];
+				const tinygltf::Buffer     &indexBuffer     = model.buffers[indexBufferView.buffer];
 
-				vertex.color = {1.0f, 1.0f, 1.0f};
+				// Get vertex positions
+				const tinygltf::Accessor   &posAccessor   = model.accessors[primitive.attributes.at("POSITION")];
+				const tinygltf::BufferView &posBufferView = model.bufferViews[posAccessor.bufferView];
+				const tinygltf::Buffer     &posBuffer     = model.buffers[posBufferView.buffer];
 
-				#if 1
-					auto [it, inserted] = uniqueVertices.insert({vertex, static_cast<uint32_t>(vertices.size())});
-					if (inserted) {
-						vertices.push_back(vertex);
+				// Get texture coordinates if available
+				bool                        hasTexCoords       = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
+				const tinygltf::Accessor   *texCoordAccessor   = nullptr;
+				const tinygltf::BufferView *texCoordBufferView = nullptr;
+				const tinygltf::Buffer     *texCoordBuffer     = nullptr;
+
+				if (hasTexCoords) {
+					texCoordAccessor   = &model.accessors[primitive.attributes.at("TEXCOORD_0")];
+					texCoordBufferView = &model.bufferViews[texCoordAccessor->bufferView];
+					texCoordBuffer     = &model.buffers[texCoordBufferView->buffer];
+				}
+
+				uint32_t baseVertex = static_cast<uint32_t>(vertices.size());
+
+				for (size_t i = 0; i < posAccessor.count; i++) {
+					Vertex vertex{};
+
+					const float *pos = reinterpret_cast<const float *>(&posBuffer.data[posBufferView.byteOffset + posAccessor.byteOffset + i * 12]);
+					// glTF uses a right-handed, Y-up coordinate system, while this scene is set up
+					// Z-up. Negating the Y coordinate here would mirror the model instead of
+					// reorienting it - Vulkan's clip-space Y convention is already handled
+					// separately via proj[1][1] *= -1 in updateUniformBuffer, so we keep the
+					// position as-is and let a rotation there do the Y-up to Z-up conversion.
+					vertex.pos = {pos[0], pos[1], pos[2]};
+
+					if (hasTexCoords) {
+						const float *texCoord = reinterpret_cast<const float *>(&texCoordBuffer->data[texCoordBufferView->byteOffset + texCoordAccessor->byteOffset + i * 8]);
+						vertex.texCoord       = {texCoord[0], texCoord[1]};
+					} else {
+						vertex.texCoord = {0.0f, 0.0f};
 					}
 
-					indices.push_back(it->second);
-				#else
+					vertex.color = {1.0f, 1.0f, 1.0f};
 					vertices.push_back(vertex);
-					indices.push_back(static_cast<uint32_t>(indices.size()));
-				#endif
+				}
+
+				const unsigned char *indexData   = &indexBuffer.data[indexBufferView.byteOffset + indexAccessor.byteOffset];
+				size_t               indexCount  = indexAccessor.count;
+				size_t               indexStride = 0;
+
+				// Determine index stride based on component type
+				if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+					indexStride = sizeof(uint16_t);
+				} else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+					indexStride = sizeof(uint32_t); 
+				} else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+					indexStride = sizeof(uint8_t);
+				} else {
+					throw std::runtime_error("Unsupported index component type");
+				}
+
+				indices.reserve(indices.size() + indexCount);
+
+				for (size_t i = 0; i < indexCount; i++) {
+					uint32_t index = 0;
+
+					if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+						index = *reinterpret_cast<const uint16_t *>(indexData + i * indexStride);
+					} else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+						index = *reinterpret_cast<const uint32_t *>(indexData + i * indexStride);
+					} else if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+						index = *reinterpret_cast<const uint8_t *>(indexData + i * indexStride);
+					}
+					indices.push_back(baseVertex + index);
+				}
 			}
 		}
 	}
@@ -1230,6 +1315,7 @@ class Engine {
 
 		UniformBufferObject ubo{};
 		ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+		ubo.model = rotate(ubo.model, glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));   // glTF Y-up -> your Z-up
 		ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 		ubo.proj = // FOV, aspect ration, near and far clip planes
 		    glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 10.0f);
